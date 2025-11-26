@@ -1,0 +1,7 @@
+*.mov
+*.mp4
+/input
+/output
+.DS_Store
+*.log
+.env.local

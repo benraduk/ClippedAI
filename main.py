@@ -8,6 +8,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf"
 
 import os
 import pickle
+from dotenv import load_dotenv
+
+# Load environment variables from .env.local
+load_dotenv('.env.local')
+
 # Suppress FFmpeg warnings
 os.environ['FFREPORT'] = 'file=ffmpeg.log:level=32'  # Only show errors, not warnings
 # Suppress HuggingFace tokenizers parallelism warnings
@@ -25,7 +30,9 @@ nltk.download('punkt')
 
 INPUT_DIR = 'input'
 OUTPUT_DIR = 'output'
-HUGGINGFACE_TOKEN = 'YOUR API KEY HERE'  # <-- User's actual token
+HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
+if not HUGGINGFACE_TOKEN:
+    raise ValueError("HUGGINGFACE_TOKEN not found in .env.local file")
 MIN_CLIP_DURATION = 45  # Minimum duration in seconds for YouTube Shorts
 MAX_CLIP_DURATION = 120  # Maximum duration in seconds for YouTube Shorts
 
@@ -227,6 +234,80 @@ def ass_time(seconds):
     centisecs = int((seconds % 1) * 100)
     return f"{hours:d}:{minutes:02d}:{secs:02d}.{centisecs:02d}"
 
+def strip_timecode_track(input_path):
+    """
+    Check if video has a timecode track and strip it if present.
+    Returns the path to the cleaned video (or original if no timecode track).
+    """
+    print("Checking for timecode track...")
+    # Check if video has timecode track
+    probe_cmd = [
+        'ffprobe', '-v', 'quiet', '-print_format', 'json',
+        '-show_streams', input_path
+    ]
+    try:
+        result = subprocess.run(probe_cmd, capture_output=True, check=True)
+        streams_info = json.loads(result.stdout.decode())
+        
+        # Check if any stream is a timecode track
+        has_timecode = any(
+            stream.get('codec_type') == 'data' and 
+            stream.get('codec_tag_string') == 'tmcd'
+            for stream in streams_info.get('streams', [])
+        )
+        
+        if has_timecode:
+            print("⚠️  Timecode track detected. Creating cleaned version...")
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            cleaned_path = os.path.join(INPUT_DIR, f"{base_name}_cleaned.mp4")
+            
+            # Check if cleaned version already exists
+            if os.path.exists(cleaned_path):
+                # Verify the cleaned version doesn't have timecode track
+                result_clean = subprocess.run(probe_cmd[:-1] + [cleaned_path], capture_output=True, check=True)
+                streams_info_clean = json.loads(result_clean.stdout.decode())
+                has_timecode_clean = any(
+                    stream.get('codec_type') == 'data' and 
+                    stream.get('codec_tag_string') == 'tmcd'
+                    for stream in streams_info_clean.get('streams', [])
+                )
+                if not has_timecode_clean:
+                    print(f"✅ Using existing cleaned video: {cleaned_path}")
+                    return cleaned_path
+                else:
+                    print(f"⚠️  Existing cleaned video still has timecode track, recreating...")
+            
+            # Strip timecode track by explicitly mapping only first 2 streams (video and audio)
+            # MOV files typically have: 0=audio, 1=video, 2=timecode
+            abs_input = os.path.abspath(input_path)
+            abs_cleaned = os.path.abspath(cleaned_path)
+            ffmpeg_clean_cmd = [
+                'ffmpeg', '-i', abs_input,
+                '-map', '0:0',  # First stream (usually audio)
+                '-map', '0:1',  # Second stream (usually video)
+                '-c', 'copy',   # Copy codecs (fast, no re-encoding)
+                '-map_metadata', '-1',  # Strip all metadata
+                '-y',
+                abs_cleaned
+            ]
+            try:
+                subprocess.run(ffmpeg_clean_cmd, check=True, capture_output=True)
+                print(f"✅ Created cleaned video without timecode track: {cleaned_path}")
+                return abs_cleaned
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to strip timecode track: {e}")
+                print(f"FFmpeg stderr: {e.stderr.decode()}")
+                print("Will attempt to use original video...")
+                return input_path
+        else:
+            print("✅ No timecode track found. Using original video.")
+            return input_path
+            
+    except Exception as e:
+        print(f"Error checking for timecode track: {e}")
+        print("Will attempt to use original video...")
+        return input_path
+
 def get_viral_title(transcript_text, groq_api_key):
     import requests
     examples = [
@@ -317,10 +398,22 @@ if len(input_files) > 1:
         print(f"  {idx}) {f}")
     print("\nFor each video, enter the number of the matching transcription file, or 0 to transcribe from scratch.")
     for vid_idx, video_file in enumerate(input_files, 1):
-        while True:
+        attempt_count = 0
+        max_attempts = 3
+        while attempt_count < max_attempts:
             try:
-                match = input(f"Match transcription for '{video_file}' (0 for none): ").strip().replace('\r', '')
-                match_idx = int(match)
+                user_input = input(f"Match transcription for '{video_file}' (0 for none, Enter for auto): ").strip()
+                if not user_input:  # Empty input, try to auto-match
+                    base_name = os.path.splitext(os.path.basename(video_file))[0]
+                    expected_trans = f"{base_name}_transcription.pkl"
+                    if expected_trans in transcription_files:
+                        video_transcription_map[video_file] = expected_trans
+                        print(f"Auto-matched: {expected_trans}")
+                    else:
+                        video_transcription_map[video_file] = None
+                        print(f"No match found, will transcribe from scratch.")
+                    break
+                match_idx = int(user_input.replace('\r', ''))
                 if match_idx == 0:
                     video_transcription_map[video_file] = None
                     break
@@ -329,8 +422,20 @@ if len(input_files) > 1:
                     break
                 else:
                     print("Invalid choice. Try again.")
-            except Exception:
+                    attempt_count += 1
+            except (ValueError, EOFError):
                 print("Invalid input. Try again.")
+                attempt_count += 1
+        
+        # If max attempts reached, auto-match or default to None
+        if attempt_count >= max_attempts:
+            print(f"Max attempts reached. Auto-matching or defaulting to transcribe from scratch.")
+            base_name = os.path.splitext(os.path.basename(video_file))[0]
+            expected_trans = f"{base_name}_transcription.pkl"
+            if expected_trans in transcription_files:
+                video_transcription_map[video_file] = expected_trans
+            else:
+                video_transcription_map[video_file] = None
 else:
     # Only one video, try to auto-match
     video_file = input_files[0]
@@ -349,11 +454,15 @@ for video_file in video_transcription_map:
     for i, (low, high) in enumerate(clip_ranges, 1):
         print(f"  {i}) {low}-{high}")
     try:
-        user_choice = int(input("Your choice: ").strip().replace('\r', ''))
-        if not (1 <= user_choice <= len(clip_ranges)):
-            raise ValueError
-    except Exception:
-        print("Invalid input. Defaulting to 2 clips.")
+        user_input = input("Your choice (default: 1 for 1-2 clips): ").strip()
+        if not user_input:  # Empty input, use default
+            user_choice = 1
+        else:
+            user_choice = int(user_input.replace('\r', ''))
+            if not (1 <= user_choice <= len(clip_ranges)):
+                raise ValueError
+    except (ValueError, EOFError):
+        print("Invalid input or no input. Defaulting to 2 clips.")
         user_choice = 1
     max_clips = clip_ranges[user_choice-1][1]
     print(f"Will select up to {max_clips} clips (if available and engaging).\n")
@@ -366,10 +475,14 @@ for video_idx, (video_file, transcription_file) in enumerate(video_transcription
     transcription_path = os.path.join(INPUT_DIR, transcription_file) if transcription_file else get_transcription_file_path(input_path)
     max_clips = video_max_clips[video_file]
 
+    # Strip timecode track if present (this fixes the "codec none" error)
+    cleaned_video_path = strip_timecode_track(input_path)
+
     # 1. Transcribe the video (or load existing)
-    transcriber = Transcriber(model_size="large-v1")
+    transcriber = Transcriber(model_size="base")
     transcription = load_existing_transcription(transcription_path) if transcription_file else None
     if transcription is None:
+        # Use original video for transcription (audio is the same)
         transcription = transcribe_with_progress(input_path, transcriber)
         save_transcription(transcription, transcription_path)
 
@@ -442,9 +555,9 @@ for video_idx, (video_file, transcription_file) in enumerate(video_transcription
     # Process each selected clip
     for clip_index, clip in enumerate(selected_clips):
         print(f'\n--- Processing Clip {clip_index + 1}/{len(selected_clips)} ---')
-        # 4. Trim the video to the selected clip
+        # 4. Trim the video to the selected clip (using cleaned video without timecode track)
         media_editor = MediaEditor()
-        media_file = AudioVideoFile(input_path)
+        media_file = AudioVideoFile(cleaned_video_path)
         trimmed_path = os.path.join(OUTPUT_DIR, f'trimmed_clip_{clip_index + 1}.mp4')
         print('Trimming video to selected clip...')
         trimmed_media_file = media_editor.trim(
@@ -478,8 +591,17 @@ for video_idx, (video_file, transcription_file) in enumerate(video_transcription
         final_output = create_animated_subtitles(output_path, transcription, clip, output_path)
         # 7. Generate viral title using Groq API
         clip_text = " ".join([w["word"] for w in transcription.get_word_info() if w["start_time"] >= clip.start_time and w["end_time"] <= clip.end_time])
-        groq_api_key = "YOUR API KEY HERE"
-        title = get_viral_title(clip_text, groq_api_key)
+        groq_api_key = os.getenv('GROQ_API_KEY')
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY not found in .env.local file")
+        try:
+            title = get_viral_title(clip_text, groq_api_key)
+        except Exception as groq_error:
+            print(f"Groq API error: {groq_error}")
+            print("Using fallback title generation...")
+            # Fallback: Create a simple title from the first few words
+            words = clip_text.split()[:5]
+            title = " ".join(words) + "... 🎬" if words else f"Clip {clip_index + 1} 🎬"
         print(f"\nViral Title for Clip {clip_index + 1}: {title}")
         # 8. Save the final video with the viral title (keep spaces, punctuation, and emojis)
         import shutil
