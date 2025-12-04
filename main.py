@@ -5,6 +5,11 @@ warnings.filterwarnings("ignore", message="Lightning automatically upgraded")
 warnings.filterwarnings("ignore", message="SymbolDatabase.GetPrototype() is deprecated")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
+# Suppress torchaudio deprecation warnings (transitioning to TorchCodec)
+warnings.filterwarnings("ignore", message="torchaudio._backend")
+warnings.filterwarnings("ignore", message="In 2.9, this function's implementation will be changed")
+# Suppress pyannote pooling std() warning
+warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom")
 
 import os
 import pickle
@@ -34,11 +39,69 @@ HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
 if not HUGGINGFACE_TOKEN:
     raise ValueError("HUGGINGFACE_TOKEN not found in .env.local file")
 MIN_CLIP_DURATION = 45  # Minimum duration in seconds for YouTube Shorts
-MAX_CLIP_DURATION = 120  # Maximum duration in seconds for YouTube Shorts
+MAX_CLIP_DURATION = 180  # Maximum duration in seconds for YouTube Shorts (updated to 3 minutes)
+
+def convert_to_mp4(input_path):
+    """
+    Convert non-MP4 video files to MP4 format.
+    Returns the path to the converted file (or original if already MP4).
+    """
+    file_ext = os.path.splitext(input_path)[1].lower()
+    
+    # If already MP4, return as-is
+    if file_ext == '.mp4':
+        return input_path
+    
+    # Check if this is a video file we can convert
+    supported_formats = ['.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.mpeg', '.mpg']
+    if file_ext not in supported_formats:
+        print(f"⚠️  Warning: {file_ext} format may not be supported. Will attempt conversion...")
+    
+    # Generate output path
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    output_path = os.path.join(INPUT_DIR, f"{base_name}_converted.mp4")
+    
+    # Check if converted file already exists
+    if os.path.exists(output_path):
+        print(f"✅ Using existing converted MP4: {output_path}")
+        return output_path
+    
+    print(f"🔄 Converting {file_ext.upper()} to MP4...")
+    print(f"   Source: {os.path.basename(input_path)}")
+    print(f"   Output: {os.path.basename(output_path)}")
+    
+    # Convert using FFmpeg with high quality settings
+    abs_input = os.path.abspath(input_path)
+    abs_output = os.path.abspath(output_path)
+    
+    ffmpeg_convert_cmd = [
+        'ffmpeg', '-i', abs_input,
+        '-c:v', 'libx264',           # H.264 video codec
+        '-preset', 'medium',          # Balance between speed and quality
+        '-crf', '23',                 # Quality (lower = better, 18-28 is good range)
+        '-c:a', 'aac',                # AAC audio codec
+        '-b:a', '192k',               # Audio bitrate
+        '-movflags', '+faststart',    # Enable streaming
+        '-y',                         # Overwrite output file
+        abs_output
+    ]
+    
+    try:
+        print("   Converting... (this may take a few minutes)")
+        result = subprocess.run(ffmpeg_convert_cmd, check=True, capture_output=True)
+        print(f"✅ Successfully converted to MP4: {output_path}")
+        return abs_output
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error converting video: {e}")
+        print(f"   FFmpeg stderr: {e.stderr.decode()}")
+        print(f"   Will attempt to use original file...")
+        return input_path
 
 def get_transcription_file_path(input_path):
     """Generate the transcription file path based on input video path"""
     base_name = os.path.splitext(os.path.basename(input_path))[0]
+    # Remove '_converted' suffix if present
+    base_name = base_name.replace('_converted', '')
     return os.path.join(INPUT_DIR, f"{base_name}_transcription.pkl")
 
 def load_existing_transcription(transcription_path):
@@ -379,10 +442,23 @@ def calculate_engagement_score(clip, transcription):
     
     return engagement_score
 
-# Find all mp4 files in the input directory
-input_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('.mp4')]
-if not input_files:
-    raise FileNotFoundError('No mp4 file found in input directory.')
+# Find all video files in the input directory (MP4 and other formats)
+all_files = os.listdir(INPUT_DIR)
+video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.mpeg', '.mpg']
+video_files = [f for f in all_files if os.path.splitext(f)[1].lower() in video_extensions and not f.endswith('_converted.mp4') and not f.endswith('_cleaned.mp4')]
+
+if not video_files:
+    raise FileNotFoundError('No video files found in input directory.')
+
+print(f"📹 Found {len(video_files)} video file(s)")
+
+# Convert non-MP4 files to MP4 format
+input_files = []
+for video_file in video_files:
+    video_path = os.path.join(INPUT_DIR, video_file)
+    converted_path = convert_to_mp4(video_path)
+    # Store just the filename for later processing
+    input_files.append(os.path.basename(converted_path))
 
 # Find all transcription files in the input directory
 transcription_files = [f for f in os.listdir(INPUT_DIR) if f.endswith('_transcription.pkl')]
