@@ -174,7 +174,7 @@ def transcribe_with_progress(audio_file_path, transcriber):
 
 def create_animated_subtitles(video_path, transcription, clip, output_path):
     """
-    Create clean, bold subtitles matching the provided style: white bold for text, yellow bold for numbers/currency, no effects, TOP CENTER.
+    Create clean, bold subtitles matching the provided style: white bold for text, yellow bold for numbers/currency, no effects, VERTICAL CENTER.
     """
     print('Creating styled subtitles...')
     
@@ -232,7 +232,7 @@ def create_animated_subtitles(video_path, transcription, clip, output_path):
     print(f"Subtitles will use font: {font_used}")
     print("NOTE: Ensure 'Montserrat-ExtraBold' font is installed in your system-wide font directory (e.g., /Library/Fonts on macOS).")
 
-    # Write ASS subtitle file with clean, bold styling at the TOP CENTER
+    # Write ASS subtitle file with clean, bold styling at the VERTICAL CENTER
     ass_file = os.path.abspath(os.path.join(OUTPUT_DIR, 'temp_subtitles.ass'))
     with open(ass_file, 'w', encoding='utf-8') as f:
         f.write("""[Script Info]
@@ -244,12 +244,12 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Montserrat-ExtraBold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Yellow,Montserrat-ExtraBold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback,Arial Rounded MT Bold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: FallbackYellow,Arial Rounded MT Bold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback2,Arial Black,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback2Yellow,Arial Black,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
+Style: Default,Montserrat-ExtraBold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
+Style: Yellow,Montserrat-ExtraBold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
+Style: Fallback,Arial Rounded MT Bold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
+Style: FallbackYellow,Arial Rounded MT Bold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
+Style: Fallback2,Arial Black,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
+Style: Fallback2Yellow,Arial Black,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,5,30,30,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
