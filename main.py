@@ -13,6 +13,7 @@ warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom")
 
 import os
 import pickle
+import argparse
 from dotenv import load_dotenv
 
 # Load environment variables from .env.local
@@ -38,6 +39,13 @@ OUTPUT_DIR = 'output'
 HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_TOKEN')
 if not HUGGINGFACE_TOKEN:
     raise ValueError("HUGGINGFACE_TOKEN not found in .env.local file")
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Generate YouTube Shorts from video files')
+parser.add_argument('--clips', '-c', type=int, choices=[2, 4, 6, 8, 10, 12],
+                    help='Max number of clips to generate (2, 4, 6, 8, 10, or 12). Bypasses interactive prompt.')
+args = parser.parse_args()
+
 MIN_CLIP_DURATION = 45  # Minimum duration in seconds for YouTube Shorts
 MAX_CLIP_DURATION = 180  # Maximum duration in seconds for YouTube Shorts (updated to 3 minutes)
 
@@ -174,20 +182,21 @@ def transcribe_with_progress(audio_file_path, transcriber):
 
 def create_animated_subtitles(video_path, transcription, clip, output_path):
     """
-    Create clean, bold subtitles matching the provided style: white bold for text, yellow bold for numbers/currency, no effects, TOP CENTER.
+    Create animated subtitles with word-by-word highlighting.
+    Shows the full phrase but highlights each word as it's spoken (karaoke-style).
     """
-    print('Creating styled subtitles...')
+    print('Creating animated word-by-word subtitles...')
     
-    # Get word info for the clip
+    # Get word info for the clip with timing
     word_info = [w for w in transcription.get_word_info() if w["start_time"] >= clip.start_time and w["end_time"] <= clip.end_time]
     if not word_info:
         print('No word-level transcript found for the clip. Skipping subtitles.')
         return video_path
     
-    # Build cues: group words into phrases of max 25 chars
+    # Build cues: group words into phrases of max 25 chars, preserving word-level timing
     cues = []
     current_cue = {
-        'words': [],
+        'words': [],  # List of {word, start, end} dicts
         'start_time': None,
         'end_time': None
     }
@@ -197,10 +206,13 @@ def create_animated_subtitles(video_path, transcription, clip, output_path):
         start_time = w["start_time"] - clip.start_time
         end_time = w["end_time"] - clip.start_time
         
+        # Calculate current phrase length
+        current_text = ' '.join([wd['word'] for wd in current_cue['words']])
+        
         should_start_new = False
         if current_cue['start_time'] is None:
             should_start_new = True
-        elif len(' '.join(current_cue['words']) + ' ' + word) > 25:
+        elif len(current_text + ' ' + word) > 25:
             should_start_new = True
         elif start_time - current_cue['end_time'] > 0.5:
             should_start_new = True
@@ -210,21 +222,22 @@ def create_animated_subtitles(video_path, transcription, clip, output_path):
                 cues.append({
                     'start': current_cue['start_time'],
                     'end': current_cue['end_time'],
-                    'text': ' '.join(current_cue['words'])
+                    'words': current_cue['words']
                 })
             current_cue = {
-                'words': [word],
+                'words': [{'word': word, 'start': start_time, 'end': end_time}],
                 'start_time': start_time,
                 'end_time': end_time
             }
         else:
-            current_cue['words'].append(word)
+            current_cue['words'].append({'word': word, 'start': start_time, 'end': end_time})
             current_cue['end_time'] = end_time
+    
     if current_cue['words']:
         cues.append({
             'start': current_cue['start_time'],
             'end': current_cue['end_time'],
-            'text': ' '.join(current_cue['words'])
+            'words': current_cue['words']
         })
     
     # Determine font used and print to console
@@ -232,7 +245,9 @@ def create_animated_subtitles(video_path, transcription, clip, output_path):
     print(f"Subtitles will use font: {font_used}")
     print("NOTE: Ensure 'Montserrat-ExtraBold' font is installed in your system-wide font directory (e.g., /Library/Fonts on macOS).")
 
-    # Write ASS subtitle file with clean, bold styling at the TOP CENTER
+    # Write ASS subtitle file with layered word-by-word highlighting
+    # Layer 0: Base text (all words in dim gray) - stays visible for entire phrase
+    # Layer 1: Highlight overlay (current word in yellow) - changes per word
     ass_file = os.path.abspath(os.path.join(OUTPUT_DIR, 'temp_subtitles.ass'))
     with open(ass_file, 'w', encoding='utf-8') as f:
         f.write("""[Script Info]
@@ -244,28 +259,40 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Montserrat-ExtraBold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Yellow,Montserrat-ExtraBold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback,Arial Rounded MT Bold,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: FallbackYellow,Arial Rounded MT Bold,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback2,Arial Black,80,&H00FFFFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
-Style: Fallback2Yellow,Arial Black,80,&H0000FFFF,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
+Style: Base,Montserrat-ExtraBold,80,&H00AAAAAA,&H000000FF,&H40000000,&HFF000000,-1,0,0,0,100,100,2,0,1,15,0,8,30,30,120,1
+Style: Highlight,Montserrat-ExtraBold,80,&H0000FFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,2,0,1,0,0,8,30,30,120,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """)
         for cue in cues:
-            start = ass_time(cue['start'])
-            end = ass_time(cue['end'])
-            words = cue['text'].split()
-            line = ''
-            for w in words:
-                if any(char.isdigit() for char in w) or ('$' in w) or (',' in w and w.replace(',', '').isdigit()):
-                    line += f'{{\\rYellow}}{w} '
-                else:
-                    line += f'{w} '
-            line = line.strip()
-            f.write(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{line}\n")
+            words_in_cue = cue['words']
+            phrase_start = ass_time(cue['start'])
+            phrase_end = ass_time(cue['end'])
+            
+            # Layer 0: Base layer - show ALL words in gray for the entire phrase duration (persistent)
+            base_text = ' '.join([wd['word'] for wd in words_in_cue])
+            f.write(f"Dialogue: 0,{phrase_start},{phrase_end},Base,,0,0,0,,{base_text}\n")
+            
+            # Layer 1: Highlight layer - show each word in yellow during its time
+            # Use transparent placeholders for non-highlighted words to maintain positioning
+            for word_idx, current_word in enumerate(words_in_cue):
+                word_start = ass_time(current_word['start'])
+                word_end = ass_time(current_word['end'])
+                
+                # Build line with invisible placeholders + visible highlighted word
+                line_parts = []
+                for idx, wd in enumerate(words_in_cue):
+                    word_text = wd['word']
+                    if idx == word_idx:
+                        # Highlighted word (yellow, visible)
+                        line_parts.append(word_text)
+                    else:
+                        # Invisible placeholder (transparent) - maintains spacing
+                        line_parts.append(f'{{\\alpha&HFF&}}{word_text}{{\\alpha&H00&}}')
+                
+                highlight_line = ' '.join(line_parts)
+                f.write(f"Dialogue: 1,{word_start},{word_end},Highlight,,0,0,0,,{highlight_line}\n")
     
     final_output = output_path.replace('.mp4', '_with_subtitles.mp4')
     # Use absolute, forward-slash paths for ffmpeg (cross-platform)
@@ -371,7 +398,7 @@ def strip_timecode_track(input_path):
         print("Will attempt to use original video...")
         return input_path
 
-def get_viral_title(transcript_text, groq_api_key):
+def get_viral_title(transcript_text, openai_api_key):
     import requests
     examples = [
         "She was almost dead 😵", "He made $1,000,000 in 1 hour 💸", "This changed everything... 😲", "They couldn't believe what happened! 😱", "He risked it all for this 😬", "She said YES! 💍", "He lost everything in seconds 😢", "The offer that shocked everyone 🤯", "He walked away with $500,000 🤑", "She turned down the deal! 🙅‍♀️", "He quit his job for this 😳", "She broke the record! 🏆", "He lost it all in Vegas 🎰", "She found out the truth 😳", "He got a second chance 🙌", "She saved his life 🦸‍♀️", "He was left speechless 😶", "She made history 📚", "He got the golden buzzer! 🔔", "She walked away a millionaire 💰", "He faced his fears 😨", "She got the surprise of her life 😮", "He made the impossible possible 🤯", "She said what?! 😲", "He got caught on camera 🎥", "She made the deal of a lifetime 🤝", "He risked everything for love ❤️", "She shocked the judges 😱", "He got the last laugh 😂", "She turned the tables 🔄", "He made the ultimate sacrifice 🥲", "She got the call she was waiting for ☎️", "He pulled off the impossible 😮", "She got the offer of a lifetime 💼", "He made the crowd go wild 🙌", "She got the biggest surprise 😲", "He made the judges cry 😢", "She got the golden ticket 🎫", "He made the world record 🌍", "She got the best deal ever 🏆", "He made the crowd cheer 👏", "She got the shock of her life 😱", "He made the impossible happen 🤯", "She got the best surprise 🎉", "He made the judges laugh 😂", "She got the golden opportunity 🥇", "He made the best deal 💰", "She got the best offer 🏅", "He made the impossible real 😲", "She got the best surprise ever 🎉", "He made the judges smile 😊", "She got the golden chance 🥇", "He made the best offer 💸", "She got the best deal 💰", "He made the impossible true 🤯", "She got the best opportunity 🏆", "He made the judges happy 😃", "She got the golden moment 🥇", "He made the best surprise 🎉", "She got the best chance 🍀", "He made the impossible work 🤔", "She got the best moment 🏆", "He made the judges proud 👏", "She got the golden surprise 🥇", "He made the best opportunity 🏅", "She got the best smile 😊", "He made the impossible win 🏆", "She got the best win 🏆", "He made the judges amazed 😲", "She got the golden win 🥇", "He made the best smile 😊", "She got the best proud 😃", "He made the impossible proud 😎", "She got the best amazed 😲", "He made the judges win 🏆", "She got the golden proud 🥇", "He made the best amazed 😲", "She got the best win ever 🏆"
@@ -382,11 +409,11 @@ def get_viral_title(transcript_text, groq_api_key):
         + ", ".join(examples) + ".\n\nTranscript:\n" + transcript_text
     )
     headers = {
-        'Authorization': f'Bearer {groq_api_key}',
+        'Authorization': f'Bearer {openai_api_key}',
         'Content-Type': 'application/json',
     }
     data = {
-        "model": "llama3-8b-8192",
+        "model": "gpt-4o-mini",
         "messages": [
             {"role": "user", "content": prompt}
         ],
@@ -394,7 +421,7 @@ def get_viral_title(transcript_text, groq_api_key):
         "temperature": 0.8
     }
     response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        "https://api.openai.com/v1/chat/completions",
         headers=headers,
         json=data
     )
@@ -525,24 +552,32 @@ else:
 # Prompt user for number of clips for each video BEFORE any processing
 video_max_clips = {}
 clip_ranges = [(1,2), (3,4), (5,6), (7,8), (9,10), (11,12)]
-for video_file in video_transcription_map:
-    print(f"\nHow many clips do you want for '{video_file}'?")
-    for i, (low, high) in enumerate(clip_ranges, 1):
-        print(f"  {i}) {low}-{high}")
-    try:
-        user_input = input("Your choice (default: 1 for 1-2 clips): ").strip()
-        if not user_input:  # Empty input, use default
+
+# If --clips argument provided, use it for all videos and skip prompts
+if args.clips:
+    print(f"\n🎬 Using command line argument: --clips {args.clips}")
+    for video_file in video_transcription_map:
+        video_max_clips[video_file] = args.clips
+        print(f"  Will select up to {args.clips} clips for '{video_file}'")
+else:
+    for video_file in video_transcription_map:
+        print(f"\nHow many clips do you want for '{video_file}'?")
+        for i, (low, high) in enumerate(clip_ranges, 1):
+            print(f"  {i}) {low}-{high}")
+        try:
+            user_input = input("Your choice (default: 1 for 1-2 clips): ").strip()
+            if not user_input:  # Empty input, use default
+                user_choice = 1
+            else:
+                user_choice = int(user_input.replace('\r', ''))
+                if not (1 <= user_choice <= len(clip_ranges)):
+                    raise ValueError
+        except (ValueError, EOFError):
+            print("Invalid input or no input. Defaulting to 2 clips.")
             user_choice = 1
-        else:
-            user_choice = int(user_input.replace('\r', ''))
-            if not (1 <= user_choice <= len(clip_ranges)):
-                raise ValueError
-    except (ValueError, EOFError):
-        print("Invalid input or no input. Defaulting to 2 clips.")
-        user_choice = 1
-    max_clips = clip_ranges[user_choice-1][1]
-    print(f"Will select up to {max_clips} clips (if available and engaging).\n")
-    video_max_clips[video_file] = max_clips
+        max_clips = clip_ranges[user_choice-1][1]
+        print(f"Will select up to {max_clips} clips (if available and engaging).\n")
+        video_max_clips[video_file] = max_clips
 
 # Process each video file
 for video_idx, (video_file, transcription_file) in enumerate(video_transcription_map.items(), 1):
@@ -665,15 +700,15 @@ for video_idx, (video_file, transcription_file) in enumerate(video_transcription
             output_path = trimmed_path
         # 6. Add styled subtitles
         final_output = create_animated_subtitles(output_path, transcription, clip, output_path)
-        # 7. Generate viral title using Groq API
+        # 7. Generate viral title using OpenAI API
         clip_text = " ".join([w["word"] for w in transcription.get_word_info() if w["start_time"] >= clip.start_time and w["end_time"] <= clip.end_time])
-        groq_api_key = os.getenv('GROQ_API_KEY')
-        if not groq_api_key:
-            raise ValueError("GROQ_API_KEY not found in .env.local file")
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            raise ValueError("OPENAI_API_KEY not found in .env.local file")
         try:
-            title = get_viral_title(clip_text, groq_api_key)
-        except Exception as groq_error:
-            print(f"Groq API error: {groq_error}")
+            title = get_viral_title(clip_text, openai_api_key)
+        except Exception as api_error:
+            print(f"OpenAI API error: {api_error}")
             print("Using fallback title generation...")
             # Fallback: Create a simple title from the first few words
             words = clip_text.split()[:5]
